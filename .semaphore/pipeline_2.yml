@@ -27,3 +27,8 @@ blocks:
           - cd ..
       secrets:
         - name: dockerhub
+promotions:
+  - name: Deploy to Blue
+    pipeline_file: pipeline_3.yml
+    auto_promote:
+      when: result = 'passed' AND tag =~ '^v.*-blue$'

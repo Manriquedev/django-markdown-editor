@@ -1,0 +1,64 @@
+version: v1.0
+name: Deploy to Blue
+agent:
+  machine:
+    type: e1-standard-2
+    os_image: ubuntu2004
+blocks:
+  - name: Blue not active
+    task:
+      jobs:
+        - name: Check
+          commands:
+            - 'if kubectl get virtualservice myapp-blue-green; then VSERVICE_DEFAULT=$(kubectl get virtualservice myapp-blue-green -o json | jq -r ''.spec.http[-1].route[0].destination.subset''); echo "Default route goes to $VSERVICE_DEFAULT"; test "$VSERVICE_DEFAULT" != "$COLOR_TEST"; fi'
+      secrets:
+        - name: kubeconfig
+      env_vars:
+        - name: COLOR_TEST
+          value: blue
+  - name: Deploy to Blue
+    task:
+      secrets:
+        - name: dockerhub
+        - name: env-blue
+        - name: kubeconfig
+      env_vars:
+        - name: COLOR_TEST
+          value: blue
+      jobs:
+        - name: Deploy
+          commands:
+            - checkout
+            - '# service & deployment'
+            - kubectl apply -f manifests/service.yml
+            - envsubst < manifests/deployment.yml | tee _deployment.yml
+            - kubectl apply -f _deployment.yml
+            - kubectl rollout status -f _deployment.yml --timeout=120s
+            - '# routes & gateway'
+            - kubectl apply -f manifests/gateway.yml
+            - envsubst < manifests/route-test.yml | tee _route.yml
+            - kubectl apply -f _route.yml
+            - '# place any other setup/initialization commands, for instance...'
+            - 'kubectl exec -it -c myapp $(kubectl get pod -l app=myapp,color=$COLOR_TEST -o name | head -n 1) -- npm run migrate'
+  - name: Smoke Tests
+    task:
+      secrets:
+        - name: kubeconfig
+      env_vars:
+        - name: COLOR_TEST
+          value: blue
+      jobs:
+        - name: Functional test
+          commands:
+            - 'kubectl exec -it -c myapp $(kubectl get pod -l app=myapp,color=$COLOR_TEST -o name | head -n 1) -- npm run ping'
+        - name: Endpoint test
+          commands:
+            - 'export INGRESS_HOST=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath=''{.status.loadBalancer.ingress[0].ip}'')'
+            - 'export INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath=''{.spec.ports[?(@.name=="http2")].port}'')'
+            - 'export URL="http://${INGRESS_HOST}:${INGRESS_PORT}"'
+            - echo "Ingress gateway is $URL"
+            - export TEST_VALUE=$(curl --cookie 'test=true' $URL/ready | jq -r '.ready')
+            - test "$TEST_VALUE" = "true"
+promotions:
+  - name: Active Blue
+    pipeline_file: pipeline_4.yml
